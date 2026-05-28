@@ -1,1 +1,7 @@
 .worktrees/
+.venv/
+.pytest_cache/
+*.egg-info/
+__pycache__/
+build/
+dist/

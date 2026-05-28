@@ -1,0 +1,19 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "mm-mcp"
+version = "0.1.0"
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.0", "httpx>=0.27"]
+
+[project.scripts]
+mm-mcp = "mm_mcp.server:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/mm_mcp"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]

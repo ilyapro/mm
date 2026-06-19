@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 import httpx
@@ -19,6 +20,7 @@ from .mattermost import Mattermost
 INSTRUCTIONS = """Mattermost MCP for https://mattermost.example.com — open this URL in the browser to see the same workspace this server talks to over REST.
 Use mm_get_me first to identify the authenticated user, then list teams and channels before posting.
 Tool results are returned as JSON text blocks from the Mattermost REST API.
+mm_post_message accepts an optional file_paths array of local file paths; the server reads each file, uploads it to the channel, and attaches it to the post.
 Tools: mm_get_me, mm_search_users, mm_list_teams, mm_get_team_by_name, mm_list_channels_for_team, mm_get_channel, mm_get_channel_by_name, mm_create_direct_channel, mm_post_message, mm_update_post, mm_delete_post, mm_get_channel_posts, mm_get_thread, mm_search_posts, mm_add_reaction."""
 
 
@@ -116,6 +118,11 @@ TOOL_DEFINITIONS: tuple[types.Tool, ...] = (
                 "message": {"type": "string", "description": "Message text."},
                 "root_id": {"type": "string", "description": "Optional root post id for thread replies."},
                 "props": {"type": "object", "description": "Optional Mattermost post props."},
+                "file_paths": {
+                    "type": "array",
+                    "items": {"type": "string"},
+                    "description": "Optional local file paths to upload and attach to the message.",
+                },
             },
             ["channel_id", "message"],
         ),
@@ -202,6 +209,31 @@ def _arg(arguments: dict[str, Any], key: str) -> Any:
         raise ValueError(f"Missing required argument: {key}") from exc
 
 
+def _read_attachment(path: str) -> tuple[str, bytes]:
+    file_path = Path(path)
+    content = file_path.read_bytes()
+    filename = file_path.name
+    if not filename:
+        raise ValueError(f"Cannot derive a filename from path: {path}")
+    return filename, content
+
+
+async def _post_message(client: Mattermost, arguments: dict[str, Any]) -> Any:
+    channel_id = _arg(arguments, "channel_id")
+    file_ids: list[str] = []
+    for path in arguments.get("file_paths") or []:
+        filename, content = _read_attachment(path)
+        uploaded = await client.upload_file(channel_id, filename, content)
+        file_ids.extend(info["id"] for info in uploaded.get("file_infos", []))
+    return await client.post_message(
+        channel_id,
+        _arg(arguments, "message"),
+        root_id=arguments.get("root_id"),
+        props=arguments.get("props"),
+        file_ids=file_ids or None,
+    )
+
+
 async def _call_mattermost(client: Mattermost, name: str, arguments: dict[str, Any]) -> Any:
     if name == "mm_get_me":
         return await client.get_me()
@@ -224,12 +256,7 @@ async def _call_mattermost(client: Mattermost, name: str, arguments: dict[str, A
     if name == "mm_create_direct_channel":
         return await client.create_direct_channel(_arg(arguments, "user_id_a"), _arg(arguments, "user_id_b"))
     if name == "mm_post_message":
-        return await client.post_message(
-            _arg(arguments, "channel_id"),
-            _arg(arguments, "message"),
-            root_id=arguments.get("root_id"),
-            props=arguments.get("props"),
-        )
+        return await _post_message(client, arguments)
     if name == "mm_update_post":
         return await client.update_post(_arg(arguments, "post_id"), _arg(arguments, "message"))
     if name == "mm_delete_post":

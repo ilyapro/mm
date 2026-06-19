@@ -90,6 +90,12 @@ async def _exercise(
             {"channel_id": "channel1", "message": "hello", "root_id": "root1", "props": {"x": 1}},
         ),
         (
+            lambda mm: mm.post_message("channel1", "see attached", file_ids=["file1", "file2"]),
+            "POST",
+            "/api/v4/posts",
+            {"channel_id": "channel1", "message": "see attached", "file_ids": ["file1", "file2"]},
+        ),
+        (
             lambda mm: mm.update_post("post1", "edited"),
             "PUT",
             "/api/v4/posts/post1/patch",
@@ -138,5 +144,36 @@ def test_non_2xx_raises_http_status_error() -> None:
                 await client.get_me()
         finally:
             await http.aclose()
+
+    asyncio.run(exercise())
+
+
+def test_upload_file_posts_multipart_body() -> None:
+    async def exercise() -> None:
+        seen: dict[str, Any] = {}
+
+        async def handler(request: httpx.Request) -> httpx.Response:
+            seen["method"] = request.method
+            seen["path"] = request.url.path
+            seen["authorization"] = request.headers.get("authorization")
+            seen["content_type"] = request.headers.get("content-type", "")
+            seen["body"] = request.content
+            return httpx.Response(201, json={"file_infos": [{"id": "file1"}]})
+
+        http = httpx.AsyncClient(transport=httpx.MockTransport(handler))
+        try:
+            client = Mattermost("https://mm.example.test/", "token", http)
+            result = await client.upload_file("channel1", "report.txt", b"hello bytes")
+        finally:
+            await http.aclose()
+
+        assert result == {"file_infos": [{"id": "file1"}]}
+        assert seen["method"] == "POST"
+        assert seen["path"] == "/api/v4/files"
+        assert seen["authorization"] == "Bearer token"
+        assert seen["content_type"].startswith("multipart/form-data")
+        assert b"channel1" in seen["body"]
+        assert b"report.txt" in seen["body"]
+        assert b"hello bytes" in seen["body"]
 
     asyncio.run(exercise())

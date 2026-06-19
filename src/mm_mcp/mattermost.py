@@ -68,13 +68,28 @@ class Mattermost:
         message: str,
         root_id: str | None = None,
         props: dict[str, Any] | None = None,
+        file_ids: list[str] | None = None,
     ) -> Any:
         body: dict[str, Any] = {"channel_id": channel_id, "message": message}
         if root_id is not None:
             body["root_id"] = root_id
         if props is not None:
             body["props"] = props
+        if file_ids:
+            body["file_ids"] = file_ids
         return await self._request("POST", "posts", json=body)
+
+    async def upload_file(self, channel_id: str, filename: str, content: bytes) -> Any:
+        response = await self._http.post(
+            f"{self.url}/api/v4/files",
+            headers={"Authorization": f"Bearer {self.token}"},
+            data={"channel_id": channel_id},
+            files={"files": (filename, content)},
+        )
+        response.raise_for_status()
+        if not response.content:
+            return {}
+        return response.json()
 
     async def update_post(self, post_id: str, message: str) -> Any:
         return await self._request("PUT", f"posts/{post_id}/patch", json={"message": message})

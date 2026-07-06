@@ -127,3 +127,18 @@ class Mattermost:
             "reactions",
             json={"user_id": user_id, "post_id": post_id, "emoji_name": emoji_name},
         )
+
+    async def get_teams_unread(self) -> Any:
+        return await self._request("GET", "users/me/teams/unread")
+
+    async def get_unread_threads(self, team_id: str, user_id: str = "me", page_size: int = 50) -> Any:
+        params = {"unread": "true", "pageSize": page_size}
+        return await self._request(
+            "GET", f"users/{user_id}/teams/{team_id}/threads?{urlencode(params)}"
+        )
+
+    async def get_channel_members_for_team(self, team_id: str) -> Any:
+        return await self._request("GET", f"users/me/teams/{team_id}/channels/members")
+
+    async def get_users_by_ids(self, user_ids: list[str]) -> Any:
+        return await self._request("POST", "users/ids", json=list(user_ids))

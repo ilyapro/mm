@@ -121,6 +121,31 @@ async def _exercise(
             "/api/v4/reactions",
             {"user_id": "user1", "post_id": "post1", "emoji_name": "thumbsup"},
         ),
+        (lambda mm: mm.get_teams_unread(), "GET", "/api/v4/users/me/teams/unread", None),
+        (
+            lambda mm: mm.get_unread_threads("team1"),
+            "GET",
+            "/api/v4/users/me/teams/team1/threads?unread=true&pageSize=50",
+            None,
+        ),
+        (
+            lambda mm: mm.get_unread_threads("team1", user_id="user1", page_size=5),
+            "GET",
+            "/api/v4/users/user1/teams/team1/threads?unread=true&pageSize=5",
+            None,
+        ),
+        (
+            lambda mm: mm.get_channel_members_for_team("team1"),
+            "GET",
+            "/api/v4/users/me/teams/team1/channels/members",
+            None,
+        ),
+        (
+            lambda mm: mm.get_users_by_ids(["user1", "user2"]),
+            "POST",
+            "/api/v4/users/ids",
+            ["user1", "user2"],
+        ),
     ],
 )
 def test_helpers_issue_expected_requests(

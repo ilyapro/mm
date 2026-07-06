@@ -21,7 +21,8 @@ INSTRUCTIONS = """Mattermost MCP for https://mattermost.example.com — open thi
 Use mm_get_me first to identify the authenticated user, then list teams and channels before posting.
 Tool results are returned as JSON text blocks from the Mattermost REST API.
 mm_post_message accepts an optional file_paths array of local file paths; the server reads each file, uploads it to the channel, and attaches it to the post.
-Tools: mm_get_me, mm_search_users, mm_list_teams, mm_get_team_by_name, mm_list_channels_for_team, mm_get_channel, mm_get_channel_by_name, mm_create_direct_channel, mm_post_message, mm_update_post, mm_delete_post, mm_get_channel_posts, mm_get_thread, mm_search_posts, mm_add_reaction."""
+To answer "what is unread for me?" use the unread tools: mm_get_unread_summary for per-team counters, mm_get_unread_threads for unread threads with root-post snippets, mm_get_unread_direct_messages for unread DMs and group messages (with the counterpart's name), and mm_get_unread_channels for public/private channels with unread messages or mentions. These return compact summaries — counts plus channel/counterpart context — not raw REST payloads, and never mutate state.
+Tools: mm_get_me, mm_search_users, mm_list_teams, mm_get_team_by_name, mm_list_channels_for_team, mm_get_channel, mm_get_channel_by_name, mm_create_direct_channel, mm_post_message, mm_update_post, mm_delete_post, mm_get_channel_posts, mm_get_thread, mm_search_posts, mm_add_reaction, mm_get_unread_summary, mm_get_unread_threads, mm_get_unread_direct_messages, mm_get_unread_channels."""
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -197,6 +198,74 @@ TOOL_DEFINITIONS: tuple[types.Tool, ...] = (
             ["user_id", "post_id", "emoji_name"],
         ),
     ),
+    types.Tool(
+        name="mm_get_unread_summary",
+        description=(
+            "Summarize unread messages, mentions, and threads per team for the authenticated "
+            "user, plus grand totals. Read-only; a cheap first call for 'what is unread for me?'."
+        ),
+        inputSchema=_schema({}),
+    ),
+    types.Tool(
+        name="mm_get_unread_threads",
+        description=(
+            "List the authenticated user's unread threads with a snippet of each root post, "
+            "across all teams or a single team. Read-only."
+        ),
+        inputSchema=_schema(
+            {
+                "team_id": {
+                    "type": "string",
+                    "description": "Optional team id to scope to; omit to scan all of the user's teams.",
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum threads to return.",
+                    "default": 50,
+                    "minimum": 1,
+                },
+            },
+        ),
+    ),
+    types.Tool(
+        name="mm_get_unread_direct_messages",
+        description=(
+            "List unread direct and group messages with the counterpart's name/username, unread "
+            "counts, and mentions, most recent first. Read-only."
+        ),
+        inputSchema=_schema(
+            {
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum conversations to return.",
+                    "default": 50,
+                    "minimum": 1,
+                },
+            },
+        ),
+    ),
+    types.Tool(
+        name="mm_get_unread_channels",
+        description=(
+            "List public/private channels with unread messages or mentions for the authenticated "
+            "user, mentions first. Read-only."
+        ),
+        inputSchema=_schema(
+            {
+                "mentions_only": {
+                    "type": "boolean",
+                    "description": "Return only channels where the user is mentioned.",
+                    "default": False,
+                },
+                "limit": {
+                    "type": "integer",
+                    "description": "Maximum channels to return.",
+                    "default": 50,
+                    "minimum": 1,
+                },
+            },
+        ),
+    ),
 )
 
 TOOL_NAMES = tuple(tool.name for tool in TOOL_DEFINITIONS)
@@ -232,6 +301,244 @@ async def _post_message(client: Mattermost, arguments: dict[str, Any]) -> Any:
         props=arguments.get("props"),
         file_ids=file_ids or None,
     )
+
+
+def _snippet(text: Any, limit: int = 200) -> str:
+    text = (text or "").strip()
+    if len(text) > limit:
+        return text[:limit].rstrip() + "…"
+    return text
+
+
+async def _collect_unread_memberships(client: Mattermost) -> list[dict[str, Any]]:
+    """Scan every team's channel memberships and return one entry per channel with
+    any unread messages or mentions. Channels shared across teams (direct/group
+    messages carry an empty team_id and repeat per team) are de-duplicated by id."""
+    teams = await client.list_teams()
+    seen: dict[str, dict[str, Any]] = {}
+    for team in teams:
+        team_id = team.get("id") if isinstance(team, dict) else None
+        if not team_id:
+            continue
+        channels = await client.list_channels_for_team(team_id)
+        members = await client.get_channel_members_for_team(team_id)
+        member_by_channel = {
+            m.get("channel_id"): m for m in members if isinstance(m, dict) and m.get("channel_id")
+        }
+        for channel in channels:
+            if not isinstance(channel, dict):
+                continue
+            channel_id = channel.get("id")
+            if not channel_id or channel_id in seen:
+                continue
+            member = member_by_channel.get(channel_id)
+            if member is None:
+                continue
+            unread = (channel.get("total_msg_count") or 0) - (member.get("msg_count") or 0)
+            mentions = member.get("mention_count") or 0
+            if unread <= 0 and mentions <= 0:
+                continue
+            seen[channel_id] = {
+                "channel_id": channel_id,
+                "type": channel.get("type"),
+                "name": channel.get("name") or "",
+                "display_name": channel.get("display_name") or "",
+                "team_id": channel.get("team_id") or "",
+                "unread_messages": unread if unread > 0 else 0,
+                "mentions": mentions,
+                "last_post_at": channel.get("last_post_at") or 0,
+            }
+    return list(seen.values())
+
+
+async def _unread_summary(client: Mattermost) -> dict[str, Any]:
+    teams = await client.list_teams()
+    team_by_id = {t.get("id"): t for t in teams if isinstance(t, dict)}
+    unread = await client.get_teams_unread()
+    teams_out: list[dict[str, Any]] = []
+    totals = {"unread_messages": 0, "mentions": 0, "unread_threads": 0, "thread_mentions": 0}
+    for entry in unread:
+        if not isinstance(entry, dict):
+            continue
+        team = team_by_id.get(entry.get("team_id"), {})
+        messages = entry.get("msg_count") or 0
+        mentions = entry.get("mention_count") or 0
+        threads = entry.get("thread_count") or 0
+        thread_mentions = entry.get("thread_mention_count") or 0
+        totals["unread_messages"] += messages
+        totals["mentions"] += mentions
+        totals["unread_threads"] += threads
+        totals["thread_mentions"] += thread_mentions
+        if messages or mentions or threads or thread_mentions:
+            teams_out.append(
+                {
+                    "team_id": entry.get("team_id"),
+                    "team_name": team.get("name"),
+                    "team_display_name": team.get("display_name"),
+                    "unread_messages": messages,
+                    "mentions": mentions,
+                    "unread_threads": threads,
+                    "thread_mentions": thread_mentions,
+                }
+            )
+    teams_out.sort(key=lambda e: (e["mentions"], e["unread_messages"]), reverse=True)
+    return {"teams": teams_out, "totals": totals}
+
+
+async def _unread_threads(
+    client: Mattermost, team_id: str | None = None, limit: int = 50
+) -> dict[str, Any]:
+    if team_id:
+        team_ids = [team_id]
+    else:
+        teams = await client.list_teams()
+        team_ids = [t.get("id") for t in teams if isinstance(t, dict) and t.get("id")]
+    collected: list[tuple[str, dict[str, Any]]] = []
+    totals = {"unread_threads": 0, "unread_mentions": 0}
+    for tid in team_ids:
+        response = await client.get_unread_threads(tid, page_size=limit)
+        totals["unread_threads"] += response.get("total_unread_threads") or 0
+        totals["unread_mentions"] += response.get("total_unread_mentions") or 0
+        for thread in response.get("threads") or []:
+            if isinstance(thread, dict):
+                collected.append((tid, thread))
+    author_ids = {
+        (t.get("post") or {}).get("user_id")
+        for _tid, t in collected
+        if (t.get("post") or {}).get("user_id")
+    }
+    channel_ids = {
+        (t.get("post") or {}).get("channel_id")
+        for _tid, t in collected
+        if (t.get("post") or {}).get("channel_id")
+    }
+    users_by_id: dict[str, Any] = {}
+    if author_ids:
+        try:
+            users = await client.get_users_by_ids(sorted(author_ids))
+            users_by_id = {u.get("id"): u for u in users if isinstance(u, dict)}
+        except httpx.HTTPError:
+            users_by_id = {}
+    channels_by_id: dict[str, Any] = {}
+    for channel_id in sorted(channel_ids)[:25]:
+        try:
+            channels_by_id[channel_id] = await client.get_channel(channel_id)
+        except httpx.HTTPError:
+            continue
+    threads_out: list[dict[str, Any]] = []
+    for tid, thread in collected:
+        post = thread.get("post") or {}
+        author = users_by_id.get(post.get("user_id")) or {}
+        channel = channels_by_id.get(post.get("channel_id")) or {}
+        threads_out.append(
+            {
+                "thread_id": thread.get("id"),
+                "team_id": tid,
+                "channel_id": post.get("channel_id"),
+                "channel_display_name": channel.get("display_name") or None,
+                "unread_replies": thread.get("unread_replies") or 0,
+                "unread_mentions": thread.get("unread_mentions") or 0,
+                "is_urgent": bool(thread.get("is_urgent")),
+                "reply_count": thread.get("reply_count") or 0,
+                "last_reply_at": thread.get("last_reply_at") or 0,
+                "root_author": author.get("username") or post.get("user_id"),
+                "snippet": _snippet(post.get("message")),
+            }
+        )
+    threads_out.sort(key=lambda e: (e["unread_mentions"], e["last_reply_at"]), reverse=True)
+    return {"threads": threads_out[:limit], "totals": totals}
+
+
+async def _unread_direct_messages(client: Mattermost, limit: int = 50) -> dict[str, Any]:
+    memberships = [m for m in await _collect_unread_memberships(client) if m["type"] in ("D", "G")]
+    me = await client.get_me()
+    my_id = me.get("id")
+    counterpart_ids: set[str] = set()
+    for membership in memberships:
+        if membership["type"] == "D":
+            parts = [p for p in membership["name"].split("__") if p]
+            others = [p for p in parts if p != my_id] or parts
+            membership["_counterpart_id"] = others[0] if others else None
+            if membership["_counterpart_id"]:
+                counterpart_ids.add(membership["_counterpart_id"])
+    users_by_id: dict[str, Any] = {}
+    if counterpart_ids:
+        users = await client.get_users_by_ids(sorted(counterpart_ids))
+        users_by_id = {u.get("id"): u for u in users if isinstance(u, dict)}
+    entries: list[dict[str, Any]] = []
+    for membership in memberships:
+        entry: dict[str, Any] = {
+            "channel_id": membership["channel_id"],
+            "unread_messages": membership["unread_messages"],
+            "mentions": membership["mentions"],
+            "last_post_at": membership["last_post_at"],
+        }
+        if membership["type"] == "D":
+            counterpart_id = membership.get("_counterpart_id")
+            user = users_by_id.get(counterpart_id)
+            entry["kind"] = "direct"
+            if counterpart_id == my_id:
+                entry["counterpart"] = {
+                    "user_id": my_id,
+                    "username": me.get("username"),
+                    "full_name": "(you)",
+                }
+            elif user:
+                full_name = f"{user.get('first_name', '')} {user.get('last_name', '')}".strip()
+                entry["counterpart"] = {
+                    "user_id": counterpart_id,
+                    "username": user.get("username"),
+                    "full_name": full_name or None,
+                }
+            else:
+                entry["counterpart"] = {
+                    "user_id": counterpart_id,
+                    "username": None,
+                    "full_name": None,
+                }
+        else:
+            entry["kind"] = "group"
+            entry["members"] = membership["display_name"] or None
+        entries.append(entry)
+    entries.sort(key=lambda e: e["last_post_at"], reverse=True)
+    return {
+        "direct_messages": entries[:limit],
+        "totals": {
+            "conversations": len(memberships),
+            "unread_messages": sum(e["unread_messages"] for e in entries),
+            "mentions": sum(e["mentions"] for e in entries),
+        },
+    }
+
+
+async def _unread_channels(
+    client: Mattermost, mentions_only: bool = False, limit: int = 50
+) -> dict[str, Any]:
+    memberships = [m for m in await _collect_unread_memberships(client) if m["type"] in ("O", "P")]
+    if mentions_only:
+        memberships = [m for m in memberships if m["mentions"] > 0]
+    entries = [
+        {
+            "channel_id": m["channel_id"],
+            "name": m["name"] or None,
+            "display_name": m["display_name"] or None,
+            "type": "public" if m["type"] == "O" else "private",
+            "team_id": m["team_id"] or None,
+            "unread_messages": m["unread_messages"],
+            "mentions": m["mentions"],
+            "last_post_at": m["last_post_at"],
+        }
+        for m in memberships
+    ]
+    entries.sort(key=lambda e: (e["mentions"], e["last_post_at"]), reverse=True)
+    return {
+        "channels": entries[:limit],
+        "totals": {
+            "channels": len(entries),
+            "unread_messages": sum(e["unread_messages"] for e in entries),
+            "mentions": sum(e["mentions"] for e in entries),
+        },
+    }
 
 
 async def _call_mattermost(client: Mattermost, name: str, arguments: dict[str, Any]) -> Any:
@@ -281,6 +588,22 @@ async def _call_mattermost(client: Mattermost, name: str, arguments: dict[str, A
             _arg(arguments, "user_id"),
             _arg(arguments, "post_id"),
             _arg(arguments, "emoji_name"),
+        )
+    if name == "mm_get_unread_summary":
+        return await _unread_summary(client)
+    if name == "mm_get_unread_threads":
+        return await _unread_threads(
+            client,
+            team_id=arguments.get("team_id"),
+            limit=arguments.get("limit", 50),
+        )
+    if name == "mm_get_unread_direct_messages":
+        return await _unread_direct_messages(client, limit=arguments.get("limit", 50))
+    if name == "mm_get_unread_channels":
+        return await _unread_channels(
+            client,
+            mentions_only=arguments.get("mentions_only", False),
+            limit=arguments.get("limit", 50),
         )
     raise ValueError(f"Unknown tool: {name}")
 

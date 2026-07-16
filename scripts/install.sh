@@ -5,7 +5,7 @@
 #   1. pip install --user the package from this worktree.
 #   2. Move the pip-generated console script to ~/.local/bin/mm-mcp-console
 #      and write a launcher at ~/.local/bin/mm-mcp that sources
-#      ~/.config/mm.env, defaults MM_URL=https://mattermost.example.com, and execs
+#      ~/.config/mm.env (which must provide MM_URL and MM_TOKEN) and execs
 #      the console script.
 #   3. Backup ~/.config/mcp-servers.json once and patch in a "mattermost"
 #      entry pointing at the launcher.
@@ -23,6 +23,14 @@ CONSOLE="$LOCAL_BIN/mm-mcp-console"
 REGISTRY="$HOME_DIR/.config/mcp-servers.json"
 ENV_FILE="$HOME_DIR/.config/mm.env"
 SYNC_MCP="$LOCAL_BIN/sync-hook"
+
+# Resolve MM_URL from the env file in a subshell so MM_TOKEN is not
+# exported into this script's environment.
+if [[ -z "${MM_URL:-}" && -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  MM_URL="$(source "$ENV_FILE" >/dev/null 2>&1 || true; printf '%s' "${MM_URL:-}")"
+fi
+: "${MM_URL:?MM_URL must be set in the environment or in $ENV_FILE}"
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pkg_dir="$(dirname "$script_dir")"
@@ -52,7 +60,7 @@ cat >"$LAUNCHER" <<'LAUNCH'
 set -euo pipefail
 
 if [[ "${1:-}" == "--help" || "${1:-}" == "-h" ]]; then
-  printf 'usage: mm-mcp\n\nstdio MCP server for Mattermost at %s\n' "${MM_URL:-https://mattermost.example.com}"
+  printf 'usage: mm-mcp\n\nstdio MCP server for Mattermost (MM_URL from the environment or ~/.config/mm.env)\n'
   exit 0
 fi
 
@@ -64,7 +72,6 @@ if [[ -f "$env_file" ]]; then
   set +a
 fi
 
-export MM_URL="${MM_URL:-https://mattermost.example.com}"
 exec "$HOME/.local/bin/mm-mcp-console" "$@"
 LAUNCH
 chmod +x "$LAUNCHER"
@@ -73,11 +80,12 @@ if [[ -f "$REGISTRY" ]]; then
   cp -p "$REGISTRY" "$REGISTRY.bak-$(date +%s)"
 fi
 
-python3 - "$REGISTRY" "$LAUNCHER" "$ENV_FILE" <<'PY'
+python3 - "$REGISTRY" "$LAUNCHER" "$ENV_FILE" "$MM_URL" <<'PY'
 import json, os, sys
 from pathlib import Path
 
 registry, launcher, env_file = (Path(p) for p in sys.argv[1:4])
+mm_url = sys.argv[4]
 data = {}
 if registry.exists():
     data = json.loads(registry.read_text() or "{}")
@@ -85,7 +93,7 @@ data["mattermost"] = {
     "command": str(launcher),
     "args": [],
     "env": {
-        "MM_URL": "https://mattermost.example.com",
+        "MM_URL": mm_url,
         "MM_MCP_ENV_FILE": str(env_file),
     },
 }

@@ -4,7 +4,7 @@
 #
 # Scope (tighter than the previous attempt): this script performs LOCAL
 # checks only. It does NOT contain or plan any external network action
-# against mattermost.example.com. The live mm_get_me / mm_list_teams proof is captured
+# against the Mattermost instance. The live mm_get_me / mm_list_teams proof is captured
 # once and committed as the tracked data file verify/live_proof.md; reading
 # that file here is a local file read, not a planned remote call.
 #
@@ -18,7 +18,7 @@
 #                                     before any stdio frame
 #   [mm-mcp]  initialize             — single MCP initialize JSON-RPC
 #                                     answered locally; instructions
-#                                     mention https://mattermost.example.com. The
+#                                     mention the configured MM_URL. The
 #                                     initialize handler returns a static
 #                                     payload and does not connect to
 #                                     Mattermost.
@@ -35,8 +35,17 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 LAUNCHER="${HOME}/.local/bin/mm-mcp"
-EXPECTED_URL="https://mattermost.example.com"
+ENV_FILE="${MM_MCP_ENV_FILE:-$HOME/.config/mm.env}"
 LIVE_PROOF="${SCRIPT_DIR}/live_proof.md"
+
+# Resolve the expected MM_URL from the env file in a subshell so MM_TOKEN
+# is not exported into this script's environment.
+if [[ -z "${MM_URL:-}" && -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  MM_URL="$(source "$ENV_FILE" >/dev/null 2>&1 || true; printf '%s' "${MM_URL:-}")"
+fi
+: "${MM_URL:?MM_URL must be set in the environment or in $ENV_FILE}"
+EXPECTED_URL="$MM_URL"
 
 PASS_COUNT=0
 FAIL_COUNT=0
@@ -181,7 +190,7 @@ fi
 # ---------------------------------------------------------------------------
 # Step 3: one-shot MCP initialize, answered locally by the launcher.
 # The initialize handler returns a static payload; it does not open any
-# HTTP connection to mattermost.example.com. The pipe is the local kernel stdio pipe.
+# HTTP connection to the Mattermost instance. The pipe is the local kernel stdio pipe.
 # ---------------------------------------------------------------------------
 echo "=== step 3: launcher initialize ==="
 

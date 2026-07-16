@@ -4,7 +4,7 @@
 # Verifies (in order):
 #   - ~/.local/bin/mm-mcp exists, is executable, and --help returns 0.
 #   - An MCP initialize JSON-RPC frame piped to the launcher returns a
-#     response whose result.instructions contains https://mattermost.example.com.
+#     response whose result.instructions contains the configured MM_URL.
 #   - ~/.config/mcp-servers.json has a mattermost entry pointing at the
 #     launcher.
 #   - The sync-hook distributor produced mattermost entries in the codex
@@ -16,13 +16,22 @@
 set -euo pipefail
 
 LAUNCHER="$HOME/.local/bin/mm-mcp"
+ENV_FILE="${MM_MCP_ENV_FILE:-$HOME/.config/mm.env}"
+
+# Resolve MM_URL from the env file in a subshell so MM_TOKEN is not
+# exported into this script's environment.
+if [[ -z "${MM_URL:-}" && -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  MM_URL="$(source "$ENV_FILE" >/dev/null 2>&1 || true; printf '%s' "${MM_URL:-}")"
+fi
+: "${MM_URL:?MM_URL must be set in the environment or in $ENV_FILE}"
 
 test -x "$LAUNCHER"
 "$LAUNCHER" --help >/dev/null
 
-python3 - "$LAUNCHER" <<'PY'
+python3 - "$LAUNCHER" "$MM_URL" <<'PY'
 import json, subprocess, sys
-launcher = sys.argv[1]
+launcher, expected_url = sys.argv[1:3]
 req = json.dumps({
     "jsonrpc": "2.0",
     "id": 1,
@@ -48,22 +57,23 @@ for line in out.decode(errors="replace").splitlines():
     if msg.get("id") != 1:
         continue
     instr = (msg.get("result") or {}).get("instructions") or ""
-    if "https://mattermost.example.com" not in instr:
-        sys.exit("instructions missing https://mattermost.example.com")
+    if expected_url not in instr:
+        sys.exit(f"instructions missing {expected_url}")
     break
 else:
     sys.stderr.write(err.decode(errors="replace"))
     sys.exit("no initialize response with id=1")
 PY
 
-python3 - <<'PY'
-import json, tomllib
+python3 - "$MM_URL" <<'PY'
+import json, sys, tomllib
 from pathlib import Path
+expected_url = sys.argv[1]
 home = Path.home()
 registry = json.loads((home / ".config/mcp-servers.json").read_text())
 mm = registry.get("mattermost") or {}
 assert mm.get("command", "").endswith("/.local/bin/mm-mcp"), mm
-assert (mm.get("env") or {}).get("MM_URL") == "https://mattermost.example.com", mm
+assert (mm.get("env") or {}).get("MM_URL") == expected_url, mm
 codex = tomllib.loads((home / ".codex/config.toml").read_text())
 assert codex.get("mcp_servers", {}).get("mattermost"), "codex missing mattermost"
 claude = json.loads((home / ".claude.json").read_text())

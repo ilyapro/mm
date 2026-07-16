@@ -17,7 +17,7 @@ from .config import ConfigError, load_config
 from .mattermost import Mattermost
 
 
-INSTRUCTIONS = """Mattermost MCP for https://mattermost.example.com — open this URL in the browser to see the same workspace this server talks to over REST.
+INSTRUCTIONS_TEMPLATE = """Mattermost MCP for {url} — open this URL in the browser to see the same workspace this server talks to over REST.
 Use mm_get_me first to identify the authenticated user, then list teams and channels before posting.
 Tool results are returned as JSON text blocks from the Mattermost REST API.
 mm_post_message accepts an optional file_paths array of local file paths; the server reads each file, uploads it to the channel, and attaches it to the post.
@@ -628,7 +628,7 @@ def create_server(client: Mattermost | None = None) -> Server:
     return server
 
 
-def initialization_options(server: Server) -> InitializationOptions:
+def initialization_options(server: Server, url: str) -> InitializationOptions:
     return InitializationOptions(
         server_name="mm-mcp",
         server_version=__version__,
@@ -636,19 +636,19 @@ def initialization_options(server: Server) -> InitializationOptions:
             notification_options=NotificationOptions(),
             experimental_capabilities={},
         ),
-        instructions=INSTRUCTIONS,
+        instructions=INSTRUCTIONS_TEMPLATE.format(url=url),
     )
 
 
-async def _run_stdio(server: Server) -> None:
+async def _run_stdio(server: Server, url: str) -> None:
     async with stdio_server() as (read_stream, write_stream):
-        await server.run(read_stream, write_stream, initialization_options(server))
+        await server.run(read_stream, write_stream, initialization_options(server, url))
 
 
 async def _serve(url: str, token: str) -> None:
     client = Mattermost(url, token)
     try:
-        await _run_stdio(create_server(client))
+        await _run_stdio(create_server(client), url)
     finally:
         await client.aclose()
 

@@ -65,7 +65,8 @@ def test_server_registers_expected_tools_and_instructions() -> None:
         "mm_get_unread_direct_messages",
         "mm_get_unread_channels",
     }
-    assert "https://mattermost.example.com" in server.initialization_options(mcp_server).instructions
+    instructions = server.initialization_options(mcp_server, "https://mm.example.test").instructions
+    assert "https://mm.example.test" in instructions
 
 
 def test_main_missing_config_exits_2_before_stdio(monkeypatch, capsys) -> None:

@@ -33,7 +33,7 @@ bash scripts/check-integration.sh
 
 `install.sh` is idempotent. `check-integration.sh` exits 0 only if the
 launcher responds to an MCP `initialize` JSON-RPC frame with instructions
-that contain `https://mattermost.example.com` and the mattermost entry has been
+that contain the configured `MM_URL` and the mattermost entry has been
 propagated to the codex, claude, and copilot configs.
 
 ## Environment

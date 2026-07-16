@@ -23,8 +23,8 @@ python -m mm_mcp
 ## System install + agent registration
 
 For a full system install (launcher in `~/.local/bin`, registration in
-`~/.config/mcp-servers.json`, and distribution to every agent via
-`~/.local/bin/sync-hook`):
+`~/.config/mcp-servers.json`, and optional propagation to downstream agent
+configs via a user-provided `MM_MCP_SYNC_HOOK` executable):
 
 ```bash
 bash scripts/install.sh
@@ -46,6 +46,7 @@ Required:
 Optional:
 
 - `MM_MCP_ENV_FILE`, a shell-style env file parsed by the Python entry point only when required config is missing.
+- `MM_MCP_SYNC_HOOK`, an executable that `install.sh` runs after updating the registry to propagate `~/.config/mcp-servers.json` to downstream agent configs; set it in the environment or in `~/.config/mm.env`.
 
 ## Tools
 

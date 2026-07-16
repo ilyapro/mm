@@ -7,7 +7,7 @@
 #     response whose result.instructions contains the configured MM_URL.
 #   - ~/.config/mcp-servers.json has a mattermost entry pointing at the
 #     launcher.
-#   - The sync-hook distributor produced mattermost entries in the codex
+#   - The registry has been propagated: mattermost entries exist in the codex
 #     (~/.codex/config.toml), claude (~/.claude.json), and copilot
 #     (~/.copilot/mcp-config.json) configs.
 #

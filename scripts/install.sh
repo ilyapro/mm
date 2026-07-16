@@ -9,8 +9,9 @@
 #      the console script.
 #   3. Backup ~/.config/mcp-servers.json once and patch in a "mattermost"
 #      entry pointing at the launcher.
-#   4. Run ~/.local/bin/sync-hook so every downstream agent
-#      config (codex, claude, copilot, ...) picks up the new server.
+#   4. If MM_MCP_SYNC_HOOK (environment or ~/.config/mm.env) points at an
+#      executable, run it so every downstream agent config (codex, claude,
+#      copilot, ...) picks up the new server.
 #
 # Re-running this script is safe; existing files are kept in sync.
 
@@ -22,15 +23,18 @@ LAUNCHER="$LOCAL_BIN/mm-mcp"
 CONSOLE="$LOCAL_BIN/mm-mcp-console"
 REGISTRY="$HOME_DIR/.config/mcp-servers.json"
 ENV_FILE="$HOME_DIR/.config/mm.env"
-SYNC_MCP="$LOCAL_BIN/sync-hook"
 
-# Resolve MM_URL from the env file in a subshell so MM_TOKEN is not
-# exported into this script's environment.
+# Resolve MM_URL and the optional sync hook from the env file in a subshell
+# so MM_TOKEN is not exported into this script's environment.
 if [[ -z "${MM_URL:-}" && -f "$ENV_FILE" ]]; then
   # shellcheck disable=SC1090
   MM_URL="$(source "$ENV_FILE" >/dev/null 2>&1 || true; printf '%s' "${MM_URL:-}")"
 fi
 : "${MM_URL:?MM_URL must be set in the environment or in $ENV_FILE}"
+if [[ -z "${MM_MCP_SYNC_HOOK:-}" && -f "$ENV_FILE" ]]; then
+  # shellcheck disable=SC1090
+  MM_MCP_SYNC_HOOK="$(source "$ENV_FILE" >/dev/null 2>&1 || true; printf '%s' "${MM_MCP_SYNC_HOOK:-}")"
+fi
 
 script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 pkg_dir="$(dirname "$script_dir")"
@@ -104,8 +108,12 @@ os.chmod(tmp, 0o600)
 tmp.rename(registry)
 PY
 
-if [[ -x "$SYNC_MCP" ]]; then
-  "$SYNC_MCP"
-else
-  echo "warning: $SYNC_MCP not executable; downstream agents not refreshed" >&2
+# Optional user-provided hook that propagates ~/.config/mcp-servers.json
+# to downstream agent configs.
+if [[ -n "${MM_MCP_SYNC_HOOK:-}" ]]; then
+  if [[ -x "$MM_MCP_SYNC_HOOK" ]]; then
+    "$MM_MCP_SYNC_HOOK"
+  else
+    echo "warning: MM_MCP_SYNC_HOOK=$MM_MCP_SYNC_HOOK not executable; agent configs not refreshed" >&2
+  fi
 fi

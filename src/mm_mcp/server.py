@@ -21,8 +21,12 @@ INSTRUCTIONS_TEMPLATE = """Mattermost MCP for {url} — open this URL in the bro
 Use mm_get_me first to identify the authenticated user, then list teams and channels before posting.
 Tool results are returned as JSON text blocks from the Mattermost REST API.
 mm_post_message accepts an optional file_paths array of local file paths; the server reads each file, uploads it to the channel, and attaches it to the post.
-To answer "what is unread for me?" use the unread tools: mm_get_unread_summary for per-team counters, mm_get_unread_threads for unread threads with root-post snippets, mm_get_unread_direct_messages for unread DMs and group messages (with the counterpart's name), and mm_get_unread_channels for public/private channels with unread messages or mentions. These return compact summaries — counts plus channel/counterpart context — not raw REST payloads, and never mutate state.
-Tools: mm_get_me, mm_search_users, mm_list_teams, mm_get_team_by_name, mm_list_channels_for_team, mm_get_channel, mm_get_channel_by_name, mm_create_direct_channel, mm_post_message, mm_update_post, mm_delete_post, mm_get_channel_posts, mm_get_thread, mm_search_posts, mm_add_reaction, mm_get_unread_summary, mm_get_unread_threads, mm_get_unread_direct_messages, mm_get_unread_channels."""
+To answer "what is unread for me?" use the unread tools: mm_get_unread_summary for per-team counters, mm_get_unread_threads for unread threads with root-post snippets, mm_get_unread_direct_messages for unread DMs and group messages (with the counterpart's name), and mm_get_unread_channels for public/private channels with unread messages or mentions. These return compact summaries — counts plus channel/counterpart context — not raw REST payloads, and never mutate state."""
+# No tool roster here on purpose: the client already has every name and schema
+# from tools/list, and a second copy only drifts. Per-tool facts belong in that
+# tool's description — the one channel every client delivers (measured: GigaCode
+# 26.7.33 reads descriptions verbatim and drops instructions entirely). These
+# instructions carry only what no single tool owns.
 
 
 def _schema(properties: dict[str, Any], required: list[str] | None = None) -> dict[str, Any]:
@@ -164,18 +168,33 @@ TOOL_DEFINITIONS: tuple[types.Tool, ...] = (
     ),
     types.Tool(
         name="mm_get_thread",
-        description="Get a post thread by root post id.",
+        description=(
+            "Get a post thread by root post id. Also the way to read a single post from a "
+            "permalink: in https://<host>/<team>/pl/<id> that <id> IS the root_post_id — pass "
+            "it here. Works for a post with no replies (the thread is just that post)."
+        ),
         inputSchema=_schema(
-            {"root_post_id": {"type": "string", "description": "Root Mattermost post id."}},
+            {
+                "root_post_id": {
+                    "type": "string",
+                    "description": "Root Mattermost post id — the <id> tail of a /pl/<id> permalink.",
+                }
+            },
             ["root_post_id"],
         ),
     ),
     types.Tool(
         name="mm_search_posts",
-        description="Search posts inside a team.",
+        description=(
+            "Search posts inside a team by TEXT. Not a lookup by id: a permalink id matches "
+            "nothing here — use mm_get_thread for that."
+        ),
         inputSchema=_schema(
             {
-                "team_id": {"type": "string", "description": "Mattermost team id."},
+                "team_id": {
+                    "type": "string",
+                    "description": "Mattermost team id from mm_list_teams or mm_get_team_by_name.",
+                },
                 "terms": {"type": "string", "description": "Mattermost post search terms."},
                 "is_or_search": {
                     "type": "boolean",
@@ -278,6 +297,19 @@ def _arg(arguments: dict[str, Any], key: str) -> Any:
         raise ValueError(f"Missing required argument: {key}") from exc
 
 
+def _path_arg(arguments: dict[str, Any], key: str) -> str:
+    """Required argument that is interpolated into the REST path.
+
+    An empty one degenerates the URL instead of failing: ``teams//posts/search``
+    answers 301 to the web app and ``channels//posts`` answers 404, so the caller
+    reads a transport error and concludes the wrong thing. Name the argument here.
+    """
+    value = _arg(arguments, key)
+    if not isinstance(value, str) or not value.strip():
+        raise ValueError(f"Argument {key} must be a non-empty string")
+    return value
+
+
 def _read_attachment(path: str) -> tuple[str, bytes]:
     file_path = Path(path)
     content = file_path.read_bytes()
@@ -288,7 +320,7 @@ def _read_attachment(path: str) -> tuple[str, bytes]:
 
 
 async def _post_message(client: Mattermost, arguments: dict[str, Any]) -> Any:
-    channel_id = _arg(arguments, "channel_id")
+    channel_id = _path_arg(arguments, "channel_id")
     file_ids: list[str] = []
     for path in arguments.get("file_paths") or []:
         filename, content = _read_attachment(path)
@@ -553,33 +585,33 @@ async def _call_mattermost(client: Mattermost, name: str, arguments: dict[str, A
     if name == "mm_list_teams":
         return await client.list_teams()
     if name == "mm_get_team_by_name":
-        return await client.get_team_by_name(_arg(arguments, "name"))
+        return await client.get_team_by_name(_path_arg(arguments, "name"))
     if name == "mm_list_channels_for_team":
-        return await client.list_channels_for_team(_arg(arguments, "team_id"), query=arguments.get("query"))
+        return await client.list_channels_for_team(_path_arg(arguments, "team_id"), query=arguments.get("query"))
     if name == "mm_get_channel":
-        return await client.get_channel(_arg(arguments, "channel_id"))
+        return await client.get_channel(_path_arg(arguments, "channel_id"))
     if name == "mm_get_channel_by_name":
-        return await client.get_channel_by_name(_arg(arguments, "team_id"), _arg(arguments, "name"))
+        return await client.get_channel_by_name(_path_arg(arguments, "team_id"), _path_arg(arguments, "name"))
     if name == "mm_create_direct_channel":
         return await client.create_direct_channel(_arg(arguments, "user_id_a"), _arg(arguments, "user_id_b"))
     if name == "mm_post_message":
         return await _post_message(client, arguments)
     if name == "mm_update_post":
-        return await client.update_post(_arg(arguments, "post_id"), _arg(arguments, "message"))
+        return await client.update_post(_path_arg(arguments, "post_id"), _arg(arguments, "message"))
     if name == "mm_delete_post":
-        return await client.delete_post(_arg(arguments, "post_id"))
+        return await client.delete_post(_path_arg(arguments, "post_id"))
     if name == "mm_get_channel_posts":
         return await client.get_channel_posts(
-            _arg(arguments, "channel_id"),
+            _path_arg(arguments, "channel_id"),
             per_page=arguments.get("per_page", 30),
             before=arguments.get("before"),
             after=arguments.get("after"),
         )
     if name == "mm_get_thread":
-        return await client.get_thread(_arg(arguments, "root_post_id"))
+        return await client.get_thread(_path_arg(arguments, "root_post_id"))
     if name == "mm_search_posts":
         return await client.search_posts(
-            _arg(arguments, "team_id"),
+            _path_arg(arguments, "team_id"),
             _arg(arguments, "terms"),
             is_or_search=arguments.get("is_or_search", False),
         )

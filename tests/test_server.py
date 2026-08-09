@@ -14,6 +14,14 @@ class _FakeClient:
         self.uploads: list[tuple[str, str, bytes]] = []
         self.post: dict[str, Any] | None = None
 
+    # Present so attribute lookup succeeds before the arguments are validated;
+    # reaching the body would mean an empty id got through to the REST call.
+    async def search_posts(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("search_posts must not be reached with an invalid team_id")
+
+    async def get_thread(self, *args: Any, **kwargs: Any) -> Any:
+        raise AssertionError("get_thread must not be reached with an invalid root_post_id")
+
     async def upload_file(self, channel_id: str, filename: str, content: bytes) -> Any:
         self.uploads.append((channel_id, filename, content))
         return {"file_infos": [{"id": f"id-{filename}"}]}
@@ -67,6 +75,34 @@ def test_server_registers_expected_tools_and_instructions() -> None:
     }
     instructions = server.initialization_options(mcp_server, "https://mm.example.test").instructions
     assert "https://mm.example.test" in instructions
+    # The roster used to be repeated here. tools/list already carries every name,
+    # and GigaCode 26.7.33 drops instructions altogether, so a second copy is pure
+    # drift risk: per-tool facts live in that tool's description instead.
+    assert "Tools: mm_get_me" not in instructions
+
+
+def test_permalink_recipe_lives_in_tool_descriptions() -> None:
+    by_name = {tool.name: tool for tool in server.TOOL_DEFINITIONS}
+
+    thread = by_name["mm_get_thread"].description
+    assert "/pl/" in thread and "root_post_id" in thread
+    assert "no replies" in thread
+
+    # A permalink id is not a search term — say so where the wrong tool is picked.
+    search = by_name["mm_search_posts"].description
+    assert "mm_get_thread" in search
+
+
+def test_empty_path_argument_is_named_instead_of_degenerating_the_url() -> None:
+    client = _FakeClient()
+
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(server._call_mattermost(client, "mm_search_posts", {"team_id": "", "terms": "x"}))
+    assert "team_id" in str(exc_info.value)
+
+    with pytest.raises(ValueError) as exc_info:
+        asyncio.run(server._call_mattermost(client, "mm_get_thread", {"root_post_id": "   "}))
+    assert "root_post_id" in str(exc_info.value)
 
 
 def test_main_missing_config_exits_2_before_stdio(monkeypatch, capsys) -> None:

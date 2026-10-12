@@ -133,6 +133,34 @@ TOOL_DEFINITIONS: tuple[types.Tool, ...] = (
         ),
     ),
     types.Tool(
+        name="mm_create_message_draft",
+        description=(
+            "Save text as a native synced Mattermost draft for the authenticated user, "
+            "WITHOUT sending/publishing a message or notifying recipients. The user opens "
+            "Mattermost Drafts, reviews it, and sends it themselves. Pass a joined channel's "
+            "channel_id (including an existing direct/group-message channel); optionally pass "
+            "root_id for a thread reply. Refuses any existing synced draft for that exact "
+            "channel/thread, including attachment-only drafts. Never falls back to sending. "
+            "Mattermost's API is not atomic: avoid concurrent editing of this destination in "
+            "other clients; unsynced local drafts cannot be detected or protected."
+        ),
+        inputSchema=_schema(
+            {
+                "channel_id": {
+                    "type": "string", "pattern": "^[a-z0-9]{26}$",
+                    "description": "Joined channel or existing DM/group channel id; not a user id.",
+                },
+                "message": {"type": "string", "minLength": 1, "description": "Draft text to save without sending."},
+                "root_id": {
+                    "type": "string", "pattern": "^([a-z0-9]{26})?$", "default": "",
+                    "description": "Optional root post id in the same channel; omit for a channel/DM draft.",
+                },
+            },
+            ["channel_id", "message"],
+        ),
+        annotations=types.ToolAnnotations(readOnlyHint=False, destructiveHint=False, idempotentHint=False),
+    ),
+    types.Tool(
         name="mm_update_post",
         description="Update a post's message text.",
         inputSchema=_schema(
@@ -596,6 +624,11 @@ async def _call_mattermost(client: Mattermost, name: str, arguments: dict[str, A
         return await client.create_direct_channel(_arg(arguments, "user_id_a"), _arg(arguments, "user_id_b"))
     if name == "mm_post_message":
         return await _post_message(client, arguments)
+    if name == "mm_create_message_draft":
+        return await client.create_message_draft(
+            _arg(arguments, "channel_id"), _arg(arguments, "message"),
+            root_id=arguments.get("root_id", ""),
+        )
     if name == "mm_update_post":
         return await client.update_post(_path_arg(arguments, "post_id"), _arg(arguments, "message"))
     if name == "mm_delete_post":

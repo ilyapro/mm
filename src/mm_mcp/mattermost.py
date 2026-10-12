@@ -1,9 +1,16 @@
 from __future__ import annotations
 
+import asyncio
+import json as json_module
+import re
 from typing import Any
 from urllib.parse import urlencode
 
 import httpx
+
+
+class DraftError(RuntimeError):
+    """A draft could not be safely created. Never fall back to posting."""
 
 
 class Mattermost:
@@ -12,6 +19,7 @@ class Mattermost:
         self.token = token
         self._http = http or httpx.AsyncClient()
         self._owns_http = http is None
+        self._draft_lock = asyncio.Lock()
 
     async def aclose(self) -> None:
         if self._owns_http:
@@ -61,6 +69,125 @@ class Mattermost:
 
     async def create_direct_channel(self, user_id_a: str, user_id_b: str) -> Any:
         return await self._request("POST", "channels/direct", json=[user_id_a, user_id_b])
+
+    async def create_message_draft(
+        self, channel_id: str, message: str, root_id: str = ""
+    ) -> dict[str, Any]:
+        """Save a native synced draft, refusing an existing destination draft.
+
+        Mattermost only offers an upsert, not atomic insert-if-absent. Serialize
+        calls on this client and check immediately before writing; other clients
+        and unsynced local drafts remain outside this lock (disclosed to callers).
+        """
+        for name, value in (("channel_id", channel_id), ("root_id", root_id)):
+            if name == "root_id" and value == "":
+                continue
+            if not isinstance(value, str) or not re.fullmatch(r"[a-z0-9]{26}", value):
+                raise ValueError(f"{name} must be a 26-character Mattermost id")
+        # Empty-message upserts can delete a draft on some server versions.
+        if not isinstance(message, str) or not message.strip():
+            raise ValueError("message must be non-empty text")
+
+        save_attempted = False
+        try:
+            async with self._draft_lock:
+                me = await self.get_me()
+                user_id = me["id"]
+                channel = await self.get_channel(channel_id)
+                if channel.get("id") != channel_id or channel.get("type") not in ("O", "P", "D", "G"):
+                    raise DraftError("Cannot verify the destination channel; no draft was written.")
+                if channel.get("delete_at"):
+                    raise DraftError("Cannot create a draft in an archived channel.")
+                # Draft listings omit channels the user has not joined. Membership
+                # must be confirmed so a missing listing is evidence of absence.
+                member = await self._request("GET", f"channels/{channel_id}/members/{user_id}")
+                if member.get("channel_id") != channel_id or member.get("user_id") != user_id:
+                    raise DraftError("Cannot verify channel membership; no draft was written.")
+                if root_id:
+                    root = await self._request("GET", f"posts/{root_id}")
+                    if root.get("id") != root_id or root.get("channel_id") != channel_id:
+                        raise DraftError("root_id must identify a post in the destination channel.")
+                    if root.get("root_id") or root.get("delete_at"):
+                        raise DraftError("root_id must identify a non-deleted thread root, not a reply.")
+
+                team_id = channel.get("team_id")
+                if not team_id and channel["type"] in ("D", "G"):
+                    teams = await self.list_teams()
+                    if not teams:
+                        raise DraftError(
+                            "Cannot safely check direct-message drafts without a joined team; "
+                            "no draft was written."
+                        )
+                    # Every team listing also includes all teamless DM/group drafts.
+                    team_id = teams[0]["id"]
+                if not isinstance(team_id, str) or not re.fullmatch(r"[a-z0-9]{26}", team_id):
+                    raise DraftError("Cannot determine a team for the draft safety check.")
+                drafts = await self._request("GET", f"users/me/teams/{team_id}/drafts")
+                if drafts is None:
+                    drafts = []  # Mattermost serializes an empty draft slice as null.
+                if not isinstance(drafts, list) or any(
+                    not isinstance(d, dict) or not isinstance(d.get("channel_id"), str)
+                    or not isinstance(d.get("root_id", ""), str) for d in drafts
+                ):
+                    raise DraftError("Invalid draft listing; cannot safely rule out an existing draft.")
+                if any(d["channel_id"] == channel_id and d.get("root_id", "") == root_id for d in drafts):
+                    raise DraftError(
+                        "A synced draft already exists for this channel/thread. "
+                        "It was left unchanged; review it in Mattermost Drafts."
+                    )
+
+                save_attempted = True
+                draft = await self._request("POST", "drafts", json={
+                    "channel_id": channel_id, "root_id": root_id, "message": message,
+                })
+                if not isinstance(draft, dict) or any(
+                    draft.get(key) != value for key, value in {
+                        "user_id": user_id, "channel_id": channel_id,
+                        "root_id": root_id, "message": message,
+                    }.items()
+                ):
+                    raise DraftError(
+                        "Mattermost returned an unexpected draft response. Save outcome is uncertain; "
+                        "inspect Mattermost Drafts before retrying. No message was sent."
+                    )
+                return {
+                    "status": "saved", "sent": False, "draft": draft,
+                    "review": "Open Mattermost Drafts, review the text, and send it yourself.",
+                    "safety_note": (
+                        "Existing synced drafts are checked before saving. Mattermost has no atomic "
+                        "create-only API: concurrent edits in other clients and unsynced local drafts "
+                        "cannot be protected. Avoid editing this destination during the call."
+                    ),
+                }
+        except httpx.HTTPError as exc:
+            reason = "network/API failure"
+            if isinstance(exc, httpx.HTTPStatusError):
+                status = exc.response.status_code
+                try:
+                    error = exc.response.json()
+                except ValueError:
+                    error = {}
+                error_id = error.get("id", "") if isinstance(error, dict) else ""
+                if status == 501 or "drafts.disabled" in error_id or "draft.feature_disabled" in error_id:
+                    reason = "synced drafts are disabled on this Mattermost server"
+                elif status == 401:
+                    reason = "Mattermost authentication failed"
+                elif status == 403:
+                    reason = "insufficient Mattermost permissions for this draft/destination"
+                elif status == 404:
+                    reason = "destination/thread not found or synced-draft API unavailable"
+                else:
+                    reason = f"Mattermost API error (HTTP {status})"
+                if isinstance(error, dict) and isinstance(error.get("message"), str):
+                    reason += f": {error['message']}"
+            outcome = (
+                "Save outcome is uncertain; inspect Mattermost Drafts before retrying."
+                if save_attempted else "No draft was written."
+            )
+            raise DraftError(f"Cannot create draft: {reason}. {outcome} No message was sent.") from exc
+        except (json_module.JSONDecodeError, KeyError, TypeError, AttributeError) as exc:
+            outcome = "Inspect Mattermost Drafts before retrying." if save_attempted else "No draft was written."
+            raise DraftError(f"Unexpected Mattermost API response. {outcome} No message was sent.") from exc
 
     async def post_message(
         self,

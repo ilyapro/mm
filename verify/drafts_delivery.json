@@ -1,0 +1,89 @@
+{
+  "package_version": "0.4.0",
+  "source_files": [
+    {
+      "source": "src/mm_mcp/__init__.py",
+      "installed": "/home/sfx/.local/lib/python3.12/site-packages/mm_mcp/__init__.py",
+      "sha256": "5ed238000a29cce07a11b926b3053b39031b45c85f0de5c586520057073ba026"
+    },
+    {
+      "source": "src/mm_mcp/__main__.py",
+      "installed": "/home/sfx/.local/lib/python3.12/site-packages/mm_mcp/__main__.py",
+      "sha256": "013c2057b46d2571146dd39147d3f973c9a5838ee914a89903aa7d1ca75acaaf"
+    },
+    {
+      "source": "src/mm_mcp/config.py",
+      "installed": "/home/sfx/.local/lib/python3.12/site-packages/mm_mcp/config.py",
+      "sha256": "43e107572d2080a304636a3612221c91abf472f270c47fb265973835e61f54b2"
+    },
+    {
+      "source": "src/mm_mcp/mattermost.py",
+      "installed": "/home/sfx/.local/lib/python3.12/site-packages/mm_mcp/mattermost.py",
+      "sha256": "4e94ac671625a7a0f04773a660898c3a1ba482ca31a58a7df5c5dc765a96bfcf"
+    },
+    {
+      "source": "src/mm_mcp/server.py",
+      "installed": "/home/sfx/.local/lib/python3.12/site-packages/mm_mcp/server.py",
+      "sha256": "c4600fc8a17de3e468f1f0a5b30e7fd17755aa96730699680be5aa7dffda1156"
+    }
+  ],
+  "launcher": "/home/sfx/.local/bin/mm-mcp",
+  "launcher_sha256": "910a2887afa5c4c15a16a3c97eee1216eb59951056296cc8e380632cae1b35ed",
+  "server_version": "0.4.0",
+  "tool_count": 20,
+  "draft_schema": {
+    "type": "object",
+    "properties": {
+      "channel_id": {
+        "type": "string",
+        "pattern": "^[a-z0-9]{26}$",
+        "description": "Joined channel or existing DM/group channel id; not a user id."
+      },
+      "message": {
+        "type": "string",
+        "minLength": 1,
+        "description": "Draft text to save without sending."
+      },
+      "root_id": {
+        "type": "string",
+        "pattern": "^([a-z0-9]{26})?$",
+        "default": "",
+        "description": "Optional root post id in the same channel; omit for a channel/DM draft."
+      }
+    },
+    "additionalProperties": false,
+    "required": [
+      "channel_id",
+      "message"
+    ]
+  },
+  "description_verified": true,
+  "existing_read_tools_passed": [
+    "mm_get_me",
+    "mm_list_teams",
+    "mm_list_channels_for_team",
+    "mm_get_channel_posts"
+  ],
+  "mode": "controlled self-DM creation",
+  "created_drafts": 2,
+  "destinations": [
+    "self-DM",
+    "self-DM existing thread"
+  ],
+  "saved_text_sha256": [
+    "b7d0a37c132033134faae05837fbcb607deb43345996ff21403cdc75d34f63b3",
+    "74b563db9c07af471b6f3d804d672d2c5e415c1b6680be3cec08a6ba31b99e5b"
+  ],
+  "retrieved_native_drafts_match": true,
+  "authenticated_owner_match": true,
+  "existing_drafts_before": 0,
+  "existing_drafts_unchanged": true,
+  "duplicate_calls_returned_isError": 2,
+  "rejected_drafts_unchanged": true,
+  "posts_unchanged": true,
+  "channel_post_counters_unchanged": true,
+  "drafts_left_for_manual_review": 2,
+  "delete_calls": 0,
+  "checked_at_utc": "2026-10-12T17:49:05.364688+00:00",
+  "result": "PASS"
+}

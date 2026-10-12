@@ -62,6 +62,7 @@ def test_server_registers_expected_tools_and_instructions() -> None:
         "mm_get_channel_by_name",
         "mm_create_direct_channel",
         "mm_post_message",
+        "mm_create_message_draft",
         "mm_update_post",
         "mm_delete_post",
         "mm_get_channel_posts",
